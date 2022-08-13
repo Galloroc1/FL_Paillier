@@ -1,4 +1,4 @@
-from paillier.paillier import Paillier,toEncryptedNumber
+from jax_pai_1.paillier import Paillier
 import numpy as np
 import pickle
 # 实例化
