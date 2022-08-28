@@ -764,7 +764,7 @@ class EncryptedNumber(object):
         new_exp = self.exponent.min()
         ml = self.__mul__(pow(EncodedNumber.BASE, self.exponent - new_exp))
         ml.exponent = np.full(fill_value=new_exp, shape=self.exponent.shape)
-        sum_ciphertext = reduce(lambda x, y: x + y, toArray().flatten())
+        sum_ciphertext = reduce(lambda x, y: x + y, toArray(ml).flatten())
         return sum_ciphertext
 
     def dot(self, other, is_pool=False):

@@ -188,7 +188,12 @@ class EncodedNumber(object):
                     prec_exponent = jnp.floor(bin_lsb_exponent / cls.LOG2_BASE)
                 elif np.issubdtype(scalar.dtype, jnp.int32):
                     prec_exponent = jnp.zeros(shape=scalar.shape)
-
+            elif isinstance(scalar,float):
+                flt_exponent = math.frexp(scalar)[1]
+                lsb_exponent = cls.FLOAT_MANTISSA_BITS - flt_exponent
+                prec_exponent = math.floor(lsb_exponent / cls.LOG2_BASE)
+            elif isinstance(scalar,int):
+                prec_exponent = 0
             else:
                 raise TypeError("Don't know the precision of type %s."
                                 % type(scalar))
@@ -196,16 +201,11 @@ class EncodedNumber(object):
             prec_exponent = math.floor(math.log(precision, cls.BASE))
 
         if max_exponent is None:
-            exponent = prec_exponent
+            exponent = prec_exponent.astype(np.int)
         else:
             exponent = np.minimum(max_exponent, prec_exponent)
+        int_rep = np.frompyfunc(lambda x, y, z: int(x * pow(y, -z)), 3, 1)(scalar, cls.BASE,exponent)
 
-        (int_rep, exponent) = np.frompyfunc(lambda x, y, z: (int(x * pow(y, -z)), int(z)), 3, 2)(scalar, cls.BASE,
-                                                                                                 exponent)
-        print(type(scalar))
-        print(scalar[0][0])
-        # print(int_rep[0])
-        print("****")
         # Wrap negative numbers by adding n
         return cls(n, int_rep % n, exponent)
 
