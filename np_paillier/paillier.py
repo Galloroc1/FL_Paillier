@@ -2,77 +2,45 @@ import logging
 import random
 import numpy as np
 import datetime
+import os
 from functools import reduce
 import multiprocessing as mp
 
-try:
-    from collections.abc import Mapping
-except ImportError:
-    Mapping = dict
-
 from .encoding import EncodedNumber
-from .util import invert, powmod, getprimeover, isqrt,trans_nptype
-from functools import wraps
+from .util import invert, powmod, getprimeover, isqrt, trans_nptype
+
 SUPPORT_TYPE = ["float", "int", "numpy.ndarray"]
 DEFAULT_KEYSIZE = 1024
 
-def toEncryptedNumber(arr):
-    data = np.frompyfunc(lambda x: (x.ciphertext(False), x.exponent), 1, 2)(arr)
-    public_key = arr.flatten()[0].public_key
-    return EncryptedNumber(public_key, data[0], data[1])
 
-class Paillier:
-    NAME = "Paillier"
+def generate_paillier_keypair(n_length=DEFAULT_KEYSIZE):
+    """Return a new :class:`PaillierPublicKey` and :class:`PaillierPrivateKey`.
 
-    def __init__(self):
-        pass
+    Add the private key to *private_keyring* if given.
 
-    def createKey(self):
-        """"
-        create public_key and private_key
-        :return public_key and private_key
-        """
-        self.public_key, self.private_key = self.generate_paillier_keypair()
-        return self.public_key, self.private_key
+    Args:
+      private_keyring (PaillierPrivateKeyring): a
+        :class:`PaillierPrivateKeyring` on which to store the private
+        key.
+      n_length: key size in bits.
 
-    def encrypt(self, arr, is_pool=False):
-        return self.public_key.encrypt(arr, is_pool=is_pool)
+    Returns:
+      tuple: The generated :class:`PaillierPublicKey` and
+      :class:`PaillierPrivateKey`
+    """
+    p = q = n = None
+    n_len = 0
+    while n_len != n_length:
+        p = getprimeover(n_length // 2)
+        q = p
+        while q == p:
+            q = getprimeover(n_length // 2)
+        n = p * q
+        n_len = n.bit_length()
+    public_key = PaillierPublicKey(n)
+    private_key = PaillierPrivateKey(public_key, p, q)
 
-    def decrypt(self, arr, is_pool=False):
-        """
-        :param arr: np.ndarray or EncryptedNumber()
-        :return: np.ndarray
-        """
-        return self.private_key.decrypt(arr, is_pool=is_pool)
-
-    def generate_paillier_keypair(self, n_length=DEFAULT_KEYSIZE):
-        """Return a new :class:`PaillierPublicKey` and :class:`PaillierPrivateKey`.
-
-        Add the private key to *private_keyring* if given.
-
-        Args:
-          private_keyring (PaillierPrivateKeyring): a
-            :class:`PaillierPrivateKeyring` on which to store the private
-            key.
-          n_length: key size in bits.
-
-        Returns:
-          tuple: The generated :class:`PaillierPublicKey` and
-          :class:`PaillierPrivateKey`
-        """
-        p = q = n = None
-        n_len = 0
-        while n_len != n_length:
-            p = getprimeover(n_length // 2)
-            q = p
-            while q == p:
-                q = getprimeover(n_length // 2)
-            n = p * q
-            n_len = n.bit_length()
-        public_key = PaillierPublicKey(n)
-        private_key = PaillierPrivateKey(public_key, p, q)
-
-        return public_key, private_key
+    return public_key, private_key
 
 
 class PaillierPublicKey(object):
@@ -90,6 +58,7 @@ class PaillierPublicKey(object):
         increased, if you are happy to redefine "safely" and lower the
         chance of detecting an integer overflow.
     """
+
     def __init__(self, n):
         self.g = n + 1
         self.n = n
@@ -106,8 +75,16 @@ class PaillierPublicKey(object):
     def __hash__(self):
         return hash(self.n)
 
+    def __str__(self):
+
+        info = ""
+        info = info + "id : " + str(id(self)) + "\n"
+        info = info + "processing : " + str(os.getpid()) + "\n"
+        info = info + "n : " + str(self.n)[0:10] + "..." + "\n"
+        return info
+
     def get_nude(self, x):
-        if x < self.n and self.n - self.max_int <= x:
+        if self.n > x >= self.n - self.max_int:
             neg_plaintext = self.n - x  # = abs(plaintext - nsquare)
             neg_ciphertext = (self.n * neg_plaintext + 1) % self.nsquare
             nude_ciphertext = invert(neg_ciphertext, self.nsquare)
@@ -117,14 +94,14 @@ class PaillierPublicKey(object):
             nude_ciphertext = (self.n * x + 1) % self.nsquare
         return nude_ciphertext
 
-    def raw_encrypt(self, plaintext, r_value=None):
+    def raw_encrypt(self, plaintext: np.ndarray, r_value=None) -> np.ndarray:
         """Paillier encryption of a positive integer plaintext < :attr:`n`.
 
         You probably should be using :meth:`encrypt` instead, because it
         handles positive and negative ints and floats.
 
         Args:
-          plaintext (int): a positive integer < :attr:`n` to be Paillier
+          plaintext (np.ndarray): a positive integer < :attr:`n` to be Paillier
             encrypted. Typically this is an encoding of the actual
             number you want to encrypt.
           r_value (int): obfuscator for the ciphertext; by default (i.e.
@@ -137,27 +114,11 @@ class PaillierPublicKey(object):
           TypeError: if plaintext is not an int.
         """
         nude_ciphertext = np.mod(self.n * plaintext + 1, self.nsquare)
-        r = r_value or self.get_random_lt_n()
+        r = r_value or random.SystemRandom().randrange(1, self.n)
         obfuscator = powmod(r, self.n, self.nsquare)
         return np.mod(nude_ciphertext * obfuscator, self.nsquare)
 
-    def get_random_lt_n(self):
-        """Return a cryptographically random number less than :attr:`n`"""
-        return random.SystemRandom().randrange(1, self.n)
-
-    def encrypt_one(self, value, precision=None, r_value=None):
-
-        if isinstance(value, EncodedNumber):
-            encoding = value
-        else:
-            encoding = EncodedNumber.encode(self, value, precision)
-        return self.encrypt_encoded(encoding, r_value)
-
-    def raw_exponent_ciphertext(self, x, ):
-        tw = self.encrypt_one(x)
-        return [tw.exponent, tw.ciphertext(False)]
-
-    def encrypt(self, arr, is_pool=False):
+    def encrypt(self, value: np.ndarray, precision=None, r_value=None) -> "EncryptedNumber":
         """Encode and Paillier encrypt a real number *value*.
 
         Args:
@@ -181,29 +142,13 @@ class PaillierPublicKey(object):
           ValueError: if *value* is out of range or *precision* is so
             high that *value* is rounded to zero.
         """
-        if isinstance(arr, np.ndarray) or isinstance(arr, float) or isinstance(arr, int):
-            pass
-        else:
-            raise TypeError(f"check your data type! {type(arr)} is not support type! we only support :{SUPPORT_TYPE}")
+        if not isinstance(value, np.ndarray):
+            raise TypeError(f"check your data type! {type(value)} is not support type! we only support :{SUPPORT_TYPE}")
 
-        if isinstance(arr, np.ndarray):
-            if len(arr.shape)==2:
-                if is_pool:
-                    # 矩阵可选pool 标量和向量不可选pool
-                    if arr.shape[0] >= 64:
-                        pool = mp.Pool(processes=mp.cpu_count()-1)
-                        data = np.array(pool.map(self.raw_exponent_ciphertext, arr))
-                        pool.close()
-                        pool.join()
-                        results = EncryptedNumber(self, data[:, 1, :], data[:, 0, :])
-                        return results
-                    else:
-                        return self.encrypt_one(arr)
-            return self.encrypt_one(arr)
-        else:
-            return self.encrypt_one(arr)
+        encoding = EncodedNumber.encode(self.n, value, precision)
+        return self.encrypt_encoded(encoding, r_value)
 
-    def encrypt_encoded(self, encoding, r_value):
+    def encrypt_encoded(self, encoding: EncodedNumber, r_value: int):
         """Paillier encrypt an encoded value.
 
         Args:
@@ -242,6 +187,7 @@ class PaillierPrivateKey(object):
       hp (int): h(p) - see Paillier's paper.
       hq (int): h(q) - see Paillier's paper.
     """
+
     def __init__(self, public_key, p, q):
         if not p * q == public_key.n:
             raise ValueError('given public key does not match the given p and q.')
@@ -320,24 +266,12 @@ class PaillierPrivateKey(object):
             different key.
         """
         if isinstance(arr, EncryptedNumber):
-            if is_pool:
-                arr = arr.toArray()
-                if arr.shape[0] >= 64:
-                    pool = mp.Pool(processes=mp.cpu_count()-1)
-                    result = np.array(pool.map(self.decrypt_one, arr))
-                    pool.close()
-                    pool.join()
-                    return trans_nptype(result)
-                else:
-                    return trans_nptype(self.decrypt_one(arr))
-            else:
-                return self.decrypt_one(arr)
-        elif isinstance(arr,np.ndarray):
+            return self.decrypt_one(arr)
+        elif isinstance(arr, np.ndarray):
             result = self.decrypt_one(arr)
             return trans_nptype(result)
         else:
             raise TypeError("not support type,need {np.ndarray,EncryptedNumber}")
-
 
     def decrypt_encoded(self, encrypted_number, Encoding=None):
         """Return the :class:`EncodedNumber` decrypted from *encrypted_number*.
@@ -375,7 +309,7 @@ class PaillierPrivateKey(object):
 
         encoded = self.raw_decrypt(encrypted_number.ciphertext(be_secure=False))
         encoded = np.frompyfunc(int, 1, 1)(encoded)
-        return Encoding(self.public_key, encoded, encrypted_number.exponent)
+        return Encoding(self.public_key.n, encoded, encrypted_number.exponent)
 
     def to_encrypted_number(self, array):
         data = np.frompyfunc(lambda x: (x.ciphertext(False), x.exponent), 1, 2)(array)
@@ -466,8 +400,10 @@ class EncryptedNumber(object):
         not a :class:`PaillierPublicKey`.
     """
 
-    # T = EncryptedNumber(self.public_key, self.ciphertext(False).T, self.exponent.T)
-    def __init__(self, public_key, ciphertext, exponent=0):
+    def __init__(self, public_key: PaillierPublicKey,
+                 ciphertext: np.ndarray,
+                 exponent: np.ndarray):
+
         self.public_key = public_key
         self.__ciphertext = ciphertext
         self.exponent = exponent
@@ -488,10 +424,8 @@ class EncryptedNumber(object):
         Returns:
 
         """
-        if isinstance(self.ciphertext(False),np.ndarray):
-            return self.__class__(self.public_key, self.ciphertext(False).T, self.exponent.T)
-        else:
-            return self.__class__(self.public_key, self.ciphertext(False), self.exponent)
+        assert isinstance(self.exponent, np.ndarray),TypeError(f"not support type,{type(self.exponent)}")
+        return self.__class__(self.public_key, self.ciphertext(False).T, self.exponent.T)
 
     @property
     def shape(self):
@@ -502,12 +436,12 @@ class EncryptedNumber(object):
 
     def __add__(self, other):
         if isinstance(other, np.ndarray):
-            if other.shape != self.ciphertext(False).shape:
-                raise ValueError(f'shape mismatch {other.shape}!={self.ciphertext(False).shape}')
+            if other.shape != self.exponent.shape:
+                raise ValueError(f'shape mismatch {other.shape}!={self.exponent.shape}')
 
         if isinstance(other, float) or isinstance(other, int):
-            if isinstance(self.ciphertext(False), np.ndarray):
-                other = np.full(shape=self.ciphertext(False).shape, fill_value=other)
+            if isinstance(self.exponent, np.ndarray):
+                other = np.full(shape=self.exponent.shape, fill_value=other)
 
         """Add an int, float, `EncryptedNumber` or `EncodedNumber`."""
         if isinstance(other, EncryptedNumber):
@@ -539,7 +473,7 @@ class EncryptedNumber(object):
         if isinstance(other, EncodedNumber):
             encoding = other
         else:
-            encoding = EncodedNumber.encode(self.public_key, other)
+            encoding = EncodedNumber.encode(self.public_key.n, other)
         product = self._raw_mul(encoding.encoding)
         exponent = self.exponent + encoding.exponent
 
@@ -596,7 +530,7 @@ class EncryptedNumber(object):
 
         return self.__ciphertext
 
-    def decrease_exponent_to(self, new_exp):
+    def decrease_exponent_to(self, new_exp:np.ndarray):
         """Return an EncryptedNumber with same value but lower exponent.
 
         If we multiply the encoded value by :attr:`EncodedNumber.BASE` and
@@ -624,17 +558,14 @@ class EncryptedNumber(object):
         """
         if np.any(new_exp > self.exponent):
             raise ValueError('New exponent %i should be more negative than '
-                             'old exponent %i' % (new_exp, self.exponent))
+                             'old exponent %i')
         if isinstance(self.exponent, np.ndarray):
-            other = pow(EncodedNumber.BASE, self.exponent - new_exp)
-            # What's the base-2 exponent of the least significant bit?
-            # The least significant bit has value 2 ** bin_lsb_exponent
-            # bin_lsb_exponent = bin_flt_exponent - cls.FLOAT_MANTISSA_BITS
-            #
-            # # What's the corresponding base BASE exponent? Round that down.
-            # prec_exponent = np.floor(bin_lsb_exponent / cls.LOG2_BASE)
-            multiplied = self * other
-            multiplied.exponent = new_exp
+            if self.exponent.all() == new_exp.all():
+                return self
+            else:
+                other = pow(EncodedNumber.BASE, self.exponent - new_exp).astype(int)
+                multiplied = self * other
+                multiplied.exponent = new_exp
 
         else:
             multiplied = self * pow(EncodedNumber.BASE, self.exponent - new_exp)
@@ -660,7 +591,7 @@ class EncryptedNumber(object):
             product2.obfuscate()
             send_to_nsa(product)   # NSA can't deduce 2.718 by bruteforce attack
         """
-        r = self.public_key.get_random_lt_n()
+        r = random.SystemRandom().randrange(1, self.public_key.n)
         r_pow_n = powmod(r, self.public_key.n, self.public_key.nsquare)
         self.__ciphertext = np.mod(self.__ciphertext * r_pow_n, self.public_key.nsquare)
         self.__is_obfuscated = True
@@ -680,12 +611,11 @@ class EncryptedNumber(object):
           ValueError: if scalar is out of range or precision.
         """
 
-        encoded = EncodedNumber.encode(self.public_key, scalar,
+        encoded = EncodedNumber.encode(self.public_key.n, scalar,
                                        max_exponent=self.exponent)
-
         return self._add_encoded(encoded)
 
-    def _add_encoded(self, encoded):
+    def _add_encoded(self, encoded:EncodedNumber):
         """Returns E(a + b), given self=E(a) and b.
 
         Args:
@@ -700,7 +630,7 @@ class EncryptedNumber(object):
         Raises:
           ValueError: if scalar is out of range or precision.
         """
-        if self.public_key != encoded.public_key:
+        if self.public_key.n != encoded.n:
             raise ValueError("Attempted to add numbers encoded against "
                              "different public keys!")
 
@@ -743,7 +673,7 @@ class EncryptedNumber(object):
         # In order to add two numbers, their exponents must match.
         a, b = self, other
         if isinstance(a.exponent, np.ndarray) and isinstance(b.exponent, np.ndarray):
-            if a.exponent.shape!=b.exponent.shape:
+            if a.exponent.shape != b.exponent.shape:
                 raise ValueError("x+y:x.shape is not eq y.shape")
             mins = np.minimum(a.exponent, b.exponent)
             a = self.decrease_exponent_to(mins)
@@ -755,12 +685,11 @@ class EncryptedNumber(object):
                 b = b.decrease_exponent_to(a.exponent)
         else:
             if not isinstance(a.exponent, np.ndarray):
-                a = EncryptedNumber(a.public_key,ciphertext=np.full(shape=b.shape,fill_value=a.ciphertext(False))
-                                    ,exponent=np.full(shape=b.shape,fill_value=a.exponent))
+                a = EncryptedNumber(a.public_key, ciphertext=np.full(shape=b.shape, fill_value=a.ciphertext(False))
+                                    , exponent=np.full(shape=b.shape, fill_value=a.exponent))
             else:
-                b = EncryptedNumber(b.public_key,ciphertext=np.full(shape=a.shape,fill_value=b.ciphertext(False))
-                                    ,exponent=np.full(shape=a.shape,fill_value=b.exponent))
-
+                b = EncryptedNumber(b.public_key, ciphertext=np.full(shape=a.shape, fill_value=b.ciphertext(False))
+                                    , exponent=np.full(shape=a.shape, fill_value=b.exponent))
 
                 mins = np.minimum(a.exponent, b.exponent)
                 a = self.decrease_exponent_to(mins)
@@ -815,17 +744,6 @@ class EncryptedNumber(object):
         else:
             return np.frompyfunc(powmod, 3, 1)(self.ciphertext(False), plaintext, self.public_key.nsquare)
 
-    def toArray(self):
-        """
-        EncryptedNumber matrix (object) conversion to EncryptedNumber matrix (np.ndarray)
-        :param :
-        :return: np.ndarray
-        """
-        data = np.frompyfunc(lambda x, y, z: EncryptedNumber(x, y, z), 3, 1)(
-            self.public_key, self.ciphertext(False), self.exponent)
-        return data
-
-
     def sum(self):
         """
         EncryptedNumber matrix (object) get sum
@@ -846,7 +764,7 @@ class EncryptedNumber(object):
         new_exp = self.exponent.min()
         ml = self.__mul__(pow(EncodedNumber.BASE, self.exponent - new_exp))
         ml.exponent = np.full(fill_value=new_exp, shape=self.exponent.shape)
-        sum_ciphertext = reduce(lambda x, y: x + y, ml.toArray().flatten())
+        sum_ciphertext = reduce(lambda x, y: x + y, toArray().flatten())
         return sum_ciphertext
 
     def dot(self, other, is_pool=False):
@@ -868,8 +786,8 @@ class EncryptedNumber(object):
         :param: other:np.ndarray
         :return: EncryptedNumber()
         """
-        if isinstance(other,EncryptedNumber):
-            if self.public_key!=other.public_key:
+        if isinstance(other, EncryptedNumber):
+            if self.public_key != other.public_key:
                 raise ValueError("x dot y: public_key x is not eq to public_key y ! So Do you believe in light?")
             else:
                 raise ValueError("x dot y: Even though public_key x is eq to public_key y, "
@@ -919,9 +837,22 @@ class EncryptedNumber(object):
                 lists.append([EncryptedNumber(self.public_key,
                                               self.ciphertext(False)[i],
                                               self.exponent[i]), other[:, j]])
-        pool = mp.Pool(processes=mp.cpu_count()-1)
+        pool = mp.Pool(processes=mp.cpu_count() - 1)
         result = np.array(pool.map(self.mulsum, lists)).reshape(self.exponent.shape[0], other.shape[1], 2)
         pool.close()
         pool.join()
         results = EncryptedNumber(self.public_key, result[:, :, 1], result[:, :, 0])
         return results
+
+
+def toEncryptedNumber(arr:np.ndarray)->EncryptedNumber:
+    data = np.frompyfunc(lambda x: (x.ciphertext(False), x.exponent), 1, 2)(arr)
+    public_key = arr.flatten()[0].public_key
+    return EncryptedNumber(public_key, data[0], data[1])
+
+
+def toArray(x:EncryptedNumber)-> np.ndarray:
+    if isinstance(x,np.ndarray):
+        print("warning : func : toArray() : param x is array, maybe you should check your data type")
+        return x
+    return np.frompyfunc(lambda x,y,z:EncryptedNumber(x,y,z),3,1)(x.public_key,x.ciphertext(False),x.exponent)

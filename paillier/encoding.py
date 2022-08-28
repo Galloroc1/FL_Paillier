@@ -1,10 +1,7 @@
 import math
 import sys
-
-import jax
 import numpy as np
-from jaxlib.xla_extension import DeviceArray
-from jax import numpy as jnp
+
 class EncodedNumber(object):
     """Represents a float or int encoded for Paillier encryption.
 
@@ -104,11 +101,10 @@ class EncodedNumber(object):
     LOG2_BASE = math.log(BASE, 2)
     FLOAT_MANTISSA_BITS = sys.float_info.mant_dig
 
-    def __init__(self, public_key, encoding, exponent,apha=0):
-        self.public_key = public_key
+    def __init__(self, encoding, exponent, n):
+        self.n = n
         self.encoding = encoding
         self.exponent = exponent
-        self.apha = apha
 
     def get_prec_exponent(self,scalar):
         if isinstance(scalar, int):
@@ -122,7 +118,7 @@ class EncodedNumber(object):
         return prec_exponent
 
     @classmethod
-    def encode(cls, public_key, scalar, precision=None, max_exponent=None):
+    def encode(cls,scalar, n,  precision=None, max_int = None):
         """Return an encoding of an int or float.
 
         This encoding is carefully chosen so that it supports the same
@@ -173,58 +169,37 @@ class EncodedNumber(object):
         """
         if precision is None:
             if isinstance(scalar, np.ndarray):
-                prec_exponent = np.zeros(shape=scalar.shape)
-                if np.issubdtype(scalar.dtype,np.float16) or np.issubdtype(scalar.dtype,np.float32) \
-                        or np.issubdtype(scalar.dtype,np.float64):
+                if np.issubdtype(scalar.dtype, np.int):
+                    prec_exponent = np.zeros(shape=scalar.shape)
+                if np.issubdtype(scalar.dtype,np.float):
                     bin_lsb_exponent = np.frexp(scalar)[1] - cls.FLOAT_MANTISSA_BITS
                     prec_exponent = np.floor(bin_lsb_exponent / cls.LOG2_BASE)
 
             elif isinstance(scalar, float) or isinstance(scalar, int):
                 prec_exponent = cls.get_prec_exponent(cls,scalar)
-
-            elif isinstance(scalar,DeviceArray):
-                prec_exponent = jnp.zeros(shape=scalar.shape)
-                if jnp.issubdtype(scalar.dtype, jnp.float16) or jnp.issubdtype(scalar.dtype, jnp.float32) \
-                        or jnp.issubdtype(scalar.dtype, jnp.float64):
-                    bin_lsb_exponent = jnp.frexp(scalar)[1] - cls.FLOAT_MANTISSA_BITS
-                    prec_exponent = jnp.floor(bin_lsb_exponent / cls.LOG2_BASE)
             else:
                 raise TypeError("Don't know the precision of type %s."
                                 % type(scalar))
         else:
             prec_exponent = math.floor(math.log(precision, cls.BASE))
 
-        if max_exponent is None:
+        if max_int is None:
             exponent = prec_exponent
         else:
             if isinstance(prec_exponent, np.ndarray):
-                exponent = np.minimum(max_exponent, prec_exponent)
-            elif isinstance(prec_exponent,DeviceArray):
-                exponent = jnp.minimum(max_exponent, prec_exponent)
-
+                exponent = np.minimum(max_int, prec_exponent)
+                (int_rep, exponent) = np.frompyfunc(lambda x, y, z: (int(x * pow(y, -z)), int(z)), 3, 2)(scalar,
+                                                                                                         cls.BASE,
+                                                                                                         exponent)
             else:
-                exponent = min(max_exponent, prec_exponent)
+                exponent = min(max_int, prec_exponent)
+                int_rep = int(round(scalar * pow(cls.BASE, -exponent)))
+                if abs(int_rep) > max_int:
+                    raise ValueError('Integer needs to be within +/- %d but got %d'
+                                     % (max_int, int_rep))
 
-        if isinstance(scalar, np.ndarray):
-            (int_rep, exponent) = np.frompyfunc(lambda x, y, z: (int(x * pow(y, -z)), int(z)), 3, 2)(scalar, cls.BASE,
-                                                                                                     exponent)
-            return cls(public_key, int_rep % public_key.n, exponent)
-
-        elif isinstance(prec_exponent,DeviceArray):
-            pow_exponent = jnp.power(cls.BASE,-exponent)
-            int_rep = (scalar * pow_exponent).astype(int)
-            exponent = exponent.astype(int)
-            int_rep = jnp.asarray((int_rep._value % public_key.n).astype(jnp.int64))
-
-            return cls(public_key, int_rep, exponent,apha=0)
-        else:
-            int_rep = int(round(scalar * pow(cls.BASE, -exponent)))
-            if abs(int_rep) > public_key.max_int:
-                raise ValueError('Integer needs to be within +/- %d but got %d'
-                                 % (public_key.max_int, int_rep))
-
-            # Wrap negative numbers by adding n
-            return cls(public_key, int_rep % public_key.n, exponent)
+        # Wrap negative numbers by adding n
+        return cls(int_rep % n, exponent ,n, )
 
     def get_mantissa(self,x,y,z):
         if x >= self.public_key.n:
@@ -284,4 +259,8 @@ class EncodedNumber(object):
         factor = pow(self.BASE, self.exponent - new_exp)
         new_enc = self.encoding * factor % self.public_key.n
         return self.__class__(self.public_key, new_enc, new_exp)
+
+
+
+
 

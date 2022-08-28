@@ -1,6 +1,11 @@
 import math
 import sys
 import numpy as np
+import jaxlib
+import jax
+import jax.numpy as jnp
+
+
 class EncodedNumber(object):
     """Represents a float or int encoded for Paillier encryption.
 
@@ -99,25 +104,23 @@ class EncodedNumber(object):
     """
     LOG2_BASE = math.log(BASE, 2)
     FLOAT_MANTISSA_BITS = sys.float_info.mant_dig
+    __slots__ = ["n","encoding","max_int","exponent"]
 
-    def __init__(self, public_key, encoding, exponent):
-        self.public_key = public_key
+    def __init__(self, n: int,
+                 encoding: np.ndarray,
+                 exponent: np.ndarray,
+                 max_int=None):
+
+        self.n = n
         self.encoding = encoding
         self.exponent = exponent
-
-    def get_prec_exponent(self,scalar):
-        if isinstance(scalar, int):
-            prec_exponent = 0
-        elif isinstance(scalar, float):
-            bin_lsb_exponent = math.frexp(scalar)[1] - self.FLOAT_MANTISSA_BITS
-            prec_exponent = math.floor(bin_lsb_exponent / self.LOG2_BASE)
+        if max_int is None:
+            self.max_int = self.n // 2
         else:
-            raise TypeError("Don't know theof type %s."
-                                % type(scalar))
-        return prec_exponent
+            self.max_int = max_int
 
     @classmethod
-    def encode(cls, public_key, scalar, precision=None, max_exponent=None):
+    def encode(cls, n, scalar: np.ndarray, precision=None, max_exponent=None) -> 'EncodedNumber':
         """Return an encoding of an int or float.
 
         This encoding is carefully chosen so that it supports the same
@@ -144,6 +147,7 @@ class EncodedNumber(object):
         detection.
 
         Args:
+          n:
           public_key (PaillierPublicKey): public key for which to encode
             (this is necessary because :attr:`~PaillierPublicKey.n`
             varies).
@@ -166,16 +170,25 @@ class EncodedNumber(object):
           EncodedNumber: Encoded form of *scalar*, ready for encryption
           against *public_key*.
         """
+
         if precision is None:
-            if isinstance(scalar, np.ndarray) :
-                prec_exponent = np.zeros(shape=scalar.shape)
-                if np.issubdtype(scalar.dtype,np.float16) or np.issubdtype(scalar.dtype,np.float32) \
-                        or np.issubdtype(scalar.dtype,np.float64):
+            if isinstance(scalar, np.ndarray):
+                if np.issubdtype(scalar.dtype, np.float) or np.issubdtype(scalar.dtype, np.float32) \
+                        or np.issubdtype(scalar.dtype, np.float64) or np.issubdtype(scalar.dtype, np.float16):
                     bin_lsb_exponent = np.frexp(scalar)[1] - cls.FLOAT_MANTISSA_BITS
                     prec_exponent = np.floor(bin_lsb_exponent / cls.LOG2_BASE)
+                elif np.issubdtype(scalar.dtype, np.int):
+                    prec_exponent = np.zeros(shape=scalar.shape)
+                else:
+                    raise TypeError("Don't know the precision of type %s."
+                                    % type(scalar))
+            elif isinstance(scalar,jaxlib.xla_extension.DeviceArray):
+                if jnp.issubdtype(scalar.dtype, jnp.float32) or jnp.issubdtype(scalar.dtype, jnp.float64):
+                    bin_lsb_exponent = jnp.frexp(scalar)[1] - cls.FLOAT_MANTISSA_BITS
+                    prec_exponent = jnp.floor(bin_lsb_exponent / cls.LOG2_BASE)
+                elif np.issubdtype(scalar.dtype, jnp.int32):
+                    prec_exponent = jnp.zeros(shape=scalar.shape)
 
-            elif isinstance(scalar, float) or isinstance(scalar, int):
-                prec_exponent = cls.get_prec_exponent(cls,scalar)
             else:
                 raise TypeError("Don't know the precision of type %s."
                                 % type(scalar))
@@ -185,35 +198,30 @@ class EncodedNumber(object):
         if max_exponent is None:
             exponent = prec_exponent
         else:
-            if isinstance(prec_exponent, np.ndarray):
-                exponent = np.minimum(max_exponent, prec_exponent)
-            else:
-                exponent = min(max_exponent, prec_exponent)
+            exponent = np.minimum(max_exponent, prec_exponent)
 
-        if isinstance(scalar, np.ndarray):
-            (int_rep, exponent) = np.frompyfunc(lambda x, y, z: (int(x * pow(y, -z)), int(z)), 3, 2)(scalar, cls.BASE,
-                                                                                                     exponent)
-        else:
-            int_rep = int(round(scalar * pow(cls.BASE, -exponent)))
-            if abs(int_rep) > public_key.max_int:
-                raise ValueError('Integer needs to be within +/- %d but got %d'
-                                 % (public_key.max_int, int_rep))
+        (int_rep, exponent) = np.frompyfunc(lambda x, y, z: (int(x * pow(y, -z)), int(z)), 3, 2)(scalar, cls.BASE,
+                                                                                                 exponent)
+        print(type(scalar))
+        print(scalar[0][0])
+        # print(int_rep[0])
+        print("****")
         # Wrap negative numbers by adding n
-        return cls(public_key, int_rep % public_key.n, exponent)
+        return cls(n, int_rep % n, exponent)
 
-    def get_mantissa(self,x,y,z):
-        if x >= self.public_key.n:
+    def get_mantissa(self, x, y, z):
+        if x >= self.n:
             # Should be mod n
             raise ValueError('Attempted to decode corrupted number')
-        elif x <= self.public_key.max_int:
+        elif x <= self.max_int:
             # Positive
             mantissa = x
-        elif x >= self.public_key.n - self.public_key.max_int:
+        elif x >= self.n - self.max_int:
             # Negative
-            mantissa = x - self.public_key.n
+            mantissa = x - self.n
         else:
             raise OverflowError('Overflow detected in decrypted number')
-        return mantissa * pow(y,z)
+        return mantissa * pow(y, z)
 
     def decode(self):
         """Decode plaintext and return the result.
@@ -225,10 +233,10 @@ class EncodedNumber(object):
         Raises:
           OverflowError: if overflow is detected in the decrypted number.
         """
-        mantissa = np.frompyfunc(self.get_mantissa, 3, 1)(self.encoding,self.BASE, self.exponent)
+        mantissa = np.frompyfunc(self.get_mantissa, 3, 1)(self.encoding, self.BASE, self.exponent)
         return mantissa
 
-    def decrease_exponent_to(self, new_exp):
+    def decrease_exponent_to(self, new_exp: np.ndarray):
         """Return an `EncodedNumber` with same value but lower exponent.
 
         If we multiply the encoded value by :attr:`BASE` and decrement
@@ -255,8 +263,7 @@ class EncodedNumber(object):
         """
         if np.any(new_exp > self.exponent):
             raise ValueError('New exponent %i should be more negative than'
-                             'old exponent %i' % (new_exp, self.exponent))
+                             'old exponent %i')
         factor = pow(self.BASE, self.exponent - new_exp)
-        new_enc = self.encoding * factor % self.public_key.n
-        return self.__class__(self.public_key, new_enc, new_exp)
-
+        new_enc = self.encoding * factor % self.n
+        return self.__class__(self.n, new_enc, new_exp)
