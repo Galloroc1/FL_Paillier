@@ -201,7 +201,10 @@ class EncodedNumber(object):
             prec_exponent = math.floor(math.log(precision, cls.BASE))
 
         if max_exponent is None:
-            exponent = prec_exponent.astype(np.int)
+            if isinstance(prec_exponent,np.ndarray):
+                exponent = prec_exponent.astype(np.int)
+            else:
+                exponent = int(prec_exponent)
         else:
             exponent = np.minimum(max_exponent, prec_exponent)
         int_rep = np.frompyfunc(lambda x, y, z: int(x * pow(y, -z)), 3, 1)(scalar, cls.BASE,exponent)

@@ -1,8 +1,6 @@
-from jax_pai_1.paillier import Paillier
 import numpy as np
 import pickle
 # 实例化
-pi = Paillier()
 # 新建公私钥
 public_key,private_key = pi.createKey()
 d1 = np.random.random_sample((2048,2))

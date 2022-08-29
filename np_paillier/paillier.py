@@ -243,7 +243,7 @@ class PaillierPrivateKey(object):
         encoded = self.decrypt_encoded(encrypted_number)
         return encoded.decode()
 
-    def decrypt(self, arr, is_pool=False):
+    def decrypt(self, arr):
         """Return the decrypted & decoded plaintext of *encrypted_number*.
 
         Uses the default :class:`EncodedNumber`, if using an alternative encoding
@@ -298,7 +298,7 @@ class PaillierPrivateKey(object):
                             ' not: %s' % type(encrypted_number))
 
         if isinstance(encrypted_number, np.ndarray):
-            encrypted_number = self.to_encrypted_number(encrypted_number)
+            encrypted_number = toEncryptedNumber(encrypted_number)
 
         if self.public_key != encrypted_number.public_key:
             raise ValueError('encrypted_number was encrypted against a '
@@ -311,9 +311,6 @@ class PaillierPrivateKey(object):
         encoded = np.frompyfunc(int, 1, 1)(encoded)
         return Encoding(self.public_key.n, encoded, encrypted_number.exponent)
 
-    def to_encrypted_number(self, array):
-        data = np.frompyfunc(lambda x: (x.ciphertext(False), x.exponent), 1, 2)(array)
-        return EncryptedNumber(self.public_key, data[0], data[1])
 
     def raw_decrypt(self, ciphertext):
         """Decrypt raw ciphertext and return raw plaintext.
@@ -458,7 +455,6 @@ class EncryptedNumber(object):
         return self.__add__(other)
 
     def __mul__(self, other):
-
         if isinstance(other, np.ndarray):
             if other.shape != self.ciphertext(False).shape:
                 raise ValueError(f'shape mismatch {other.shape}!={self.ciphertext(False).shape}')
@@ -744,106 +740,6 @@ class EncryptedNumber(object):
         else:
             return np.frompyfunc(powmod, 3, 1)(self.ciphertext(False), plaintext, self.public_key.nsquare)
 
-    def sum(self):
-        """
-        EncryptedNumber matrix (object) get sum
-          return EncryptedNumber object
-
-        example:
-              Z[A] = EncryptedNumber()
-              A = np.array([[1,2,3],
-                           [1,2,3],
-                           [1,2,3]])
-
-              Z[A].sum() = [A.sum()]=[18]
-
-        :param:
-        :return: EncryptedNumber()
-        """
-
-        new_exp = self.exponent.min()
-        ml = self.__mul__(pow(EncodedNumber.BASE, self.exponent - new_exp))
-        ml.exponent = np.full(fill_value=new_exp, shape=self.exponent.shape)
-        sum_ciphertext = reduce(lambda x, y: x + y, toArray(ml).flatten())
-        return sum_ciphertext
-
-    def dot(self, other, is_pool=False):
-        """
-        The ciphertext matrix is multiplied by the plaintext matrix
-
-              input: matrix_B:np.ndarray
-              return EncryptedNumber()
-              example:
-                  Z[A] = EncryptedNumber()
-                  A = np.array([[1,2,3],
-                               [1,2,1]])
-
-                  B = np.array([[1,1],
-                               [1,2],
-                               [0,3]])
-                  Z[C]=Z[A].dot(B)=[[3,14],
-                                  [3,8]]
-        :param: other:np.ndarray
-        :return: EncryptedNumber()
-        """
-        if isinstance(other, EncryptedNumber):
-            if self.public_key != other.public_key:
-                raise ValueError("x dot y: public_key x is not eq to public_key y ! So Do you believe in light?")
-            else:
-                raise ValueError("x dot y: Even though public_key x is eq to public_key y, "
-                                 "I don't want to write this code, "
-                                 "so you'd better multiply the plaintext of A and B and encrypt it.")
-        if is_pool:
-            return self.dot_pool(other)
-        else:
-            new_base = []
-            new_exponent = []
-            for i in range(self.exponent.shape[0]):
-                for j in range(other.shape[1]):
-                    new_data = EncryptedNumber(self.public_key,
-                                               self.ciphertext(False)[i],
-                                               self.exponent[i]).__mul__(other[:, j]).sum()
-
-                    new_base.append(new_data.ciphertext(False))
-                    new_exponent.append(new_data.exponent)
-            new_base = np.array(new_base).reshape(self.exponent.shape[0], other.shape[1])
-            new_exponent = np.array(new_exponent).reshape(self.exponent.shape[0], other.shape[1])
-            return EncryptedNumber(self.public_key, new_base, new_exponent)
-
-    def mulsum(self, lists):
-        """
-        get sum
-        Args:
-            lists:
-
-        Returns:
-
-        """
-        new_data = lists[0].__mul__(lists[1]).sum()
-        return [new_data.exponent, new_data.ciphertext(False)]
-
-    def dot_pool(self, other):
-        """
-        do dot by pool
-        Args:
-            other: np.ndarray
-
-        Returns:EncryptedNumber
-
-        """
-        lists = []
-        for i in range(self.exponent.shape[0]):
-            for j in range(other.shape[1]):
-                lists.append([EncryptedNumber(self.public_key,
-                                              self.ciphertext(False)[i],
-                                              self.exponent[i]), other[:, j]])
-        pool = mp.Pool(processes=mp.cpu_count() - 1)
-        result = np.array(pool.map(self.mulsum, lists)).reshape(self.exponent.shape[0], other.shape[1], 2)
-        pool.close()
-        pool.join()
-        results = EncryptedNumber(self.public_key, result[:, :, 1], result[:, :, 0])
-        return results
-
 
 def toEncryptedNumber(arr:np.ndarray)->EncryptedNumber:
     data = np.frompyfunc(lambda x: (x.ciphertext(False), x.exponent), 1, 2)(arr)
@@ -855,4 +751,4 @@ def toArray(x:EncryptedNumber)-> np.ndarray:
     if isinstance(x,np.ndarray):
         print("warning : func : toArray() : param x is array, maybe you should check your data type")
         return x
-    return np.frompyfunc(lambda x,y,z:EncryptedNumber(x,y,z),3,1)(x.public_key,x.ciphertext(False),x.exponent)
+    return np.frompyfunc(lambda x,y,z:EncryptedNumber(x,int(y),int(z)),3,1)(x.public_key,x.ciphertext(False),x.exponent)
