@@ -18,8 +18,6 @@ import random
 from base64 import urlsafe_b64encode, urlsafe_b64decode
 from binascii import hexlify, unhexlify
 
-import numpy as np
-
 try:
     import gmpy2
     HAVE_GMP = True
@@ -35,6 +33,7 @@ except ImportError:
 # GMP's powmod has greater overhead than Python's pow, but is faster.
 # From a quick experiment on our machine, this seems to be the break even:
 _USE_MOD_FROM_GMP_SIZE = (1 << (8*2))
+_USE_MULMOD_FROM_GMP_SIZE = (1 << 1000) # pow(2, 1000)
 
 
 def powmod(a, b, c):
@@ -46,11 +45,22 @@ def powmod(a, b, c):
     """
     if a == 1:
         return 1
-    # if not HAVE_GMP or max(a, b, c) < _USE_MOD_FROM_GMP_SIZE:
-    #     return pow(a, b, c)
+    if not HAVE_GMP or max(a, b, c) < _USE_MOD_FROM_GMP_SIZE:
+        return pow(a, b, c)
     else:
         return int(gmpy2.powmod(a, b, c))
 
+
+def mulmod(a, b, c):
+    """
+    Uses GMP, if available, to do a * b mod c, where a, b, c
+    are integers.
+
+    :return int: (a * b) % c
+    """
+
+    a, b, c = gmpy2.mpz(a), gmpy2.mpz(b), gmpy2.mpz(c)
+    return int(gmpy2.mod(gmpy2.mul(a, b), c))
 
 
 def extended_euclidean_algorithm(a, b):
@@ -178,14 +188,6 @@ def int_to_base64(source):
     I = hex(source).rstrip("L").lstrip("0x")
     return base64url_encode(unhexlify((len(I) % 2) * '0' + I))
 
-def trans_nptype(data):
-    dtype = data.flatten()[0]
-    if isinstance(dtype,np.float64) or isinstance(dtype,np.float32) or isinstance(dtype,np.float16) :
-        return data
-    elif isinstance(dtype,int):
-        return data.astype(np.int32)
-    elif isinstance(dtype,float):
-        return data.astype(np.float64)
 
 # prime testing
 
@@ -402,7 +404,7 @@ def miller_rabin(n, k):
     for _ in range(k):  # each iteration divides risk of false prime by 4
         a = random.randint(2, n-2)  # choose a random witness
 
-        x = powmod(a, d, n)
+        x = pow(a, d, n)
         if x == 1 or x == n-1:
             continue  # go to next witness
 
