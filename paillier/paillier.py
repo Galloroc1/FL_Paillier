@@ -63,7 +63,6 @@ def pool_with_func(func, _iter, processes):
     r = pool.map(func, _iter)
     pool.close()
     pool.join()
-    del pool
     return r
 
 
